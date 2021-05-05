@@ -11,6 +11,9 @@ import (
 // to be planned for destruction.
 type NodePlanDestroyableResourceInstance struct {
 	*NodeAbstractResourceInstance
+
+	// skipRefresh indicates that we should skip refreshing
+	skipRefresh bool
 }
 
 var (
@@ -46,6 +49,36 @@ func (n *NodePlanDestroyableResourceInstance) Execute(ctx EvalContext, op walkOp
 	diags = diags.Append(err)
 	if diags.HasErrors() {
 		return diags
+	}
+
+	// Note any upgrades that readResourceInstanceState might've done in the
+	// prevRunState, so that it'll conform to current schema.
+	diags = diags.Append(n.writeResourceInstanceState(ctx, state, prevRunState))
+	if diags.HasErrors() {
+		return diags
+	}
+	// Also the refreshState, because that should still reflect schema upgrades
+	// even if not refreshing.
+	diags = diags.Append(n.writeResourceInstanceState(ctx, state, refreshState))
+	if diags.HasErrors() {
+		return diags
+	}
+
+	// Refresh maybe, except for data resources because it doesn't make sense
+	// to read those when we're just about to discard the result without using
+	// it anyway.
+	if !n.skipRefresh && addr.Resource.Resource.Mode != addrs.DataResourceMode {
+		s, refreshDiags := n.refresh(ctx, state)
+		diags = diags.Append(refreshDiags)
+		if diags.HasErrors() {
+			return diags
+		}
+
+		state = s
+		diags = diags.Append(n.writeResourceInstanceState(ctx, state, refreshState))
+		if diags.HasErrors() {
+			return diags
+		}
 	}
 
 	change, destroyPlanDiags := n.planDestroy(ctx, state, "")
